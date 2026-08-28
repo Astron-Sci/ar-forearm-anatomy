@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>前臂手部 AR 解剖 - 调试版</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app">
+  <video id="video" playsinline autoplay muted></video>
+  <div id="three-container"></div>
+
+  <!-- 调试面板 -->
+  <div id="debug-panel">
+    <div class="dbg-title">🔧 调试面板
+      <button id="btn-collapse" class="mini-btn">—</button>
+    </div>
+    <div id="dbg-body">
+      <div class="dbg-row"><span class="dbg-label">检测状态</span><span id="dbg-status">未启动</span></div>
+      <div class="dbg-row"><span class="dbg-label">手部置信度</span><span id="dbg-score">-</span></div>
+      <div class="dbg-row"><span class="dbg-label">手指弯曲(4指)</span><span id="dbg-curl">-</span></div>
+      <div class="dbg-row"><span class="dbg-label">拇指弯曲</span><span id="dbg-thumb">-</span></div>
+      <div class="dbg-row"><span class="dbg-label">腕部角度</span><span id="dbg-wrist">-</span></div>
+      <div class="dbg-row"><span class="dbg-label">识别动作</span><span id="dbg-action" class="dbg-action">-</span></div>
+      <div class="dbg-row"><span class="dbg-label">高亮肌肉</span><span id="dbg-muscles">-</span></div>
+    </div>
+  </div>
+
+  <!-- 控制栏 -->
+  <div id="controls">
+    <button id="btn-bones" class="active">🦴 骨骼</button>
+    <button id="btn-muscles" class="active">💪 肌肉</button>
+    <button id="btn-highlight" class="active">✨ 联动高亮</button>
+    <button id="btn-cam">🔄 摄像头</button>
+    <button id="btn-manual">✋ 手动查看</button>
+  </div>
+
+  <!-- 启动覆盖 -->
+  <div id="start-overlay">
+    <div class="start-box">
+      <h2>🦴 前臂与手部 AR 解剖 <span class="tag">调试版 v0.1</span></h2>
+      <p>摄像头识别你的手 → 叠加 3D 骨骼/肌肉模型<br>做动作 → 联动高亮参与运动的肌肉</p>
+      <button id="btn-start">▶ 开始</button>
+      <p class="tip">将手伸到摄像头前 30-50cm | 可切换前后摄像头</p>
+    </div>
+  </div>
+
+  <div id="toast" class="hidden"></div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
