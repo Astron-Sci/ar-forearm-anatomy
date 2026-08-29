@@ -277,7 +277,8 @@ const CAM_FOV = 55;                        // 相机垂直 FOV
 const MODEL_LEN = 0.55;                    // 模型烘焙后全长（前臂+手）
 const REAL_ARM_LEN = 0.44;                 // 真实前臂+手全长 (m)
 const REAL_HAND_LEN = 0.19;                // 真实手长：腕→中指指尖 (m)
-const Z_GAIN = 3;                          // MediaPipe z 深度增益（z 尺度远小于 x/y，放大后法线/方向更稳）
+const Z_GAIN = 1.5;                          // MediaPipe z 深度增益（近距时 z 易主导方向，调低）
+const FINGER_Z_W = 0.3;                       // 手指方向中 z 分量权重（弱化，防深度主导 90° 偏转）
 const SMOOTH_K = 0.45;                     // 跟随平滑系数（0-1，越大越跟手）
 // 模型在 PALM_DEPTH 处时，屏幕归一化高度 1.0 对应的世界长度
 const VIS_H = 2 * PALM_DEPTH * Math.tan(THREE.MathUtils.degToRad(CAM_FOV) / 2);
@@ -321,23 +322,31 @@ function updateModelFromHand(lm) {
   const scale = THREE.MathUtils.clamp(handLen * SCALE_K, 0.4, 12);
   const targetScale = new THREE.Vector3(scale, scale, scale);
 
-  // ── 3D 旋转：手指方向（X 轴）+ 掌面法线（Z 轴，掌心朝镜头为正）──
-  // X 轴：腕 → 中指指尖（更长更稳）
-  const fx = p12.x - p0.x, fy = p12.y - p0.y, fz = p12.z - p0.z;
-  const fl = Math.hypot(fx, fy, fz) || 1;
-  const xAxis = new THREE.Vector3(fx / fl, fy / fl, fz / fl);
-  // Z 轴：掌面法线 = (中指MCP-腕) × (小指MCP-中指MCP)，左手掌心朝镜头时指向 +Z
+  // ── 3D 旋转：手指方向（X 轴）+ 掌面法线（Z 轴，掌心强制朝镜头）──
+  // X 轴：腕 → 中指MCP（不受屈指影响，z 分量弱化防深度主导）
+  const fx = (p9.x - p0.x), fy = (p9.y - p0.y), fz = (p9.z - p0.z) * FINGER_Z_W;
+  let xAxis = new THREE.Vector3(fx, fy, fz);
+  if (xAxis.lengthSq() > 1e-8) xAxis.normalize(); else xAxis.set(0, 1, 0);
+  // Z 轴：掌面法线 = (中指MCP-腕) × (小指MCP-中指MCP)；
+  // 强制 z≥0（掌心朝镜头）——牺牲手背翻转跟随，换稳定性（避免叉积符号抖动造成 90°/180° 乱转）
   const a1x = p9.x - p0.x, a1y = p9.y - p0.y, a1z = p9.z - p0.z;
   const a2x = p17.x - p9.x, a2y = p17.y - p9.y, a2z = p17.z - p9.z;
-  const zAxis = new THREE.Vector3(
+  let zAxis = new THREE.Vector3(
     a1y * a2z - a1z * a2y,
     a1z * a2x - a1x * a2z,
     a1x * a2y - a1y * a2x,
   );
-  if (zAxis.lengthSq() > 1e-8) zAxis.normalize();
+  if (zAxis.lengthSq() < 1e-8) zAxis.set(0, 0, 1);
+  if (zAxis.z < 0) zAxis.negate();   // 掌心强制朝镜头
+  zAxis.normalize();
+  // 与「朝镜头」先验混合：限制法线倾斜幅度（法线过于敏感时仍保持大体朝镜头，避免乱转）
+  zAxis.lerp(new THREE.Vector3(0, 0, 1), 0.55).normalize();
+  // Gram-Schmidt 正交化：xAxis 去掉 zAxis 分量
+  xAxis.addScaledVector(zAxis, -xAxis.dot(zAxis));
+  if (xAxis.lengthSq() < 1e-8) xAxis.set(1, 0, 0);
+  xAxis.normalize();
   // Y 轴：Z × X（与模型本地基一致）
-  const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis);
-  if (yAxis.lengthSq() > 1e-8) yAxis.normalize();
+  const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
   const targetQuat = new THREE.Quaternion().setFromRotationMatrix(
     new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis)
   );
