@@ -22,6 +22,7 @@ const state = {
   calib: { phase: 'idle', start: 0, ang: 0, qAlg: null, offset: null },  // 校准：idle|waiting|done
   selectedMuscle: null, // 当前选中的肌肉 id（点击识别）
   layerMode: -1,        // 分层查看：-1=完整
+  paused: false,        // 暂停跟随（冻结模型，方便点击查看肌肉）
 };
 
 // ── Three.js 场景 ──
@@ -181,35 +182,35 @@ const HIGHLIGHT_OPACITY = 0.95;
 // ── 肌肉中文信息表（含层次，教学用）──
 // layer: 0=浅层 1=中层 2=深层 3=手内在/支持带；group: 肌群
 const MUSCLE_DEFS = [
-  { id: 'brachioradialis', names: ['left brachioradialis'], cn: '肱桡肌', group: '前臂前群', layer: 0, func: '屈肘关节；前臂中立位时协助旋前、旋后' },
-  { id: 'pronator teres', names: ['left pronator teres', 'humeral head of left pronator teres', 'ulnar head of left pronator teres'], cn: '旋前圆肌', group: '前臂前群', layer: 0, func: '屈肘、前臂旋前（前臂最强旋前肌之一）' },
-  { id: 'flexor carpi radialis', names: ['left flexor carpi radialis'], cn: '桡侧腕屈肌', group: '前臂前群', layer: 0, func: '屈腕、外展腕（桡偏）' },
-  { id: 'palmaris longus', names: ['left palmaris longus'], cn: '掌长肌', group: '前臂前群', layer: 0, func: '屈腕、紧张掌腱膜（约 15% 人缺如）' },
-  { id: 'flexor carpi ulnaris', names: ['left flexor carpi ulnaris', 'humeral head of left flexor carpi ulnaris', 'ulnar head of left flexor carpi ulnaris'], cn: '尺侧腕屈肌', group: '前臂前群', layer: 0, func: '屈腕、内收腕（尺偏）' },
-  { id: 'flexor digitorum superficialis', names: ['left flexor digitorum superficialis', 'left flexor digitorum superficialis (2)'], cn: '指浅屈肌', group: '前臂前群', layer: 1, func: '屈近侧指间关节和掌指关节，协助屈腕' },
-  { id: 'flexor digitorum profundus', names: ['left flexor digitorum profundus'], cn: '指深屈肌', group: '前臂前群', layer: 2, func: '屈远侧指间关节（唯一），同时屈近侧指间关节和掌指关节' },
-  { id: 'flexor pollicis longus', names: ['left flexor pollicis longus'], cn: '拇长屈肌', group: '前臂前群', layer: 2, func: '屈拇指指间关节和掌指关节' },
-  { id: 'pronator quadratus', names: ['left pronator quadratus'], cn: '旋前方肌', group: '前臂前群', layer: 2, func: '前臂旋前（前臂最深层旋前肌，维持旋前）' },
+  { id: 'brachioradialis', names: ['left brachioradialis'], cn: '肱桡肌', group: '前臂前群', layer: 0, func: '屈肘关节；前臂旋前位时能使前臂旋后' },
+  { id: 'pronator teres', names: ['left pronator teres', 'humeral head of left pronator teres', 'ulnar head of left pronator teres'], cn: '旋前圆肌', group: '前臂前群', layer: 0, func: '使前臂旋前；屈肘关节' },
+  { id: 'flexor carpi radialis', names: ['left flexor carpi radialis'], cn: '桡侧腕屈肌', group: '前臂前群', layer: 0, func: '屈腕、外展腕（桡偏）；屈肘' },
+  { id: 'palmaris longus', names: ['left palmaris longus'], cn: '掌长肌', group: '前臂前群', layer: 0, func: '屈腕关节；紧张掌腱膜' },
+  { id: 'flexor carpi ulnaris', names: ['left flexor carpi ulnaris', 'humeral head of left flexor carpi ulnaris', 'ulnar head of left flexor carpi ulnaris'], cn: '尺侧腕屈肌', group: '前臂前群', layer: 0, func: '屈腕、内收腕（尺偏）；屈肘' },
+  { id: 'flexor digitorum superficialis', names: ['left flexor digitorum superficialis', 'left flexor digitorum superficialis (2)'], cn: '指浅屈肌', group: '前臂前群', layer: 1, func: '屈第 2~5 指近侧指骨间关节和掌指关节；屈腕' },
+  { id: 'flexor digitorum profundus', names: ['left flexor digitorum profundus'], cn: '指深屈肌', group: '前臂前群', layer: 2, func: '屈第 2~5 指远侧、近侧指骨间关节和掌指关节；屈腕' },
+  { id: 'flexor pollicis longus', names: ['left flexor pollicis longus'], cn: '拇长屈肌', group: '前臂前群', layer: 2, func: '屈拇指指骨间关节和掌指关节' },
+  { id: 'pronator quadratus', names: ['left pronator quadratus'], cn: '旋前方肌', group: '前臂前群', layer: 2, func: '使前臂旋前' },
   { id: 'extensor carpi radialis longus', names: ['left extensor carpi radialis longus'], cn: '桡侧腕长伸肌', group: '前臂后群', layer: 0, func: '伸腕、外展腕（桡偏）' },
-  { id: 'extensor carpi radialis brevis', names: ['left extensor carpi radialis brevis'], cn: '桡侧腕短伸肌', group: '前臂后群', layer: 0, func: '伸腕（桡侧）' },
-  { id: 'extensor digitorum', names: ['left extensor digitorum'], cn: '指伸肌', group: '前臂后群', layer: 0, func: '伸掌指关节，继而伸指间关节；伸腕' },
+  { id: 'extensor carpi radialis brevis', names: ['left extensor carpi radialis brevis'], cn: '桡侧腕短伸肌', group: '前臂后群', layer: 0, func: '伸腕、外展腕（桡偏）' },
+  { id: 'extensor digitorum', names: ['left extensor digitorum'], cn: '指伸肌', group: '前臂后群', layer: 0, func: '伸第 2~5 指；伸腕关节' },
   { id: 'extensor digiti minimi', names: ['left extensor digiti minimi'], cn: '小指伸肌', group: '前臂后群', layer: 0, func: '伸小指' },
   { id: 'extensor carpi ulnaris', names: ['left extensor carpi ulnaris', 'left extensor carpi ulnaris (2)'], cn: '尺侧腕伸肌', group: '前臂后群', layer: 0, func: '伸腕、内收腕（尺偏）' },
-  { id: 'supinator', names: ['left supinator'], cn: '旋后肌', group: '前臂后群', layer: 2, func: '前臂旋后（深部，力量强）' },
-  { id: 'abductor pollicis longus', names: ['left abductor pollicis longus'], cn: '拇长展肌', group: '前臂后群', layer: 2, func: '外展拇指（腕掌关节）' },
-  { id: 'extensor pollicis brevis', names: ['left extensor pollicis brevis'], cn: '拇短伸肌', group: '前臂后群', layer: 2, func: '伸拇指掌指关节' },
-  { id: 'extensor pollicis longus', names: ['left extensor pollicis longus'], cn: '拇长伸肌', group: '前臂后群', layer: 2, func: '伸拇指指间关节（与拇长展肌/拇短伸肌构成鼻烟壶）' },
-  { id: 'extensor indicis', names: ['left extensor indicis'], cn: '示指伸肌', group: '前臂后群', layer: 2, func: '伸示指' },
-  { id: 'abductor pollicis brevis', names: ['left abductor pollicis brevis'], cn: '拇短展肌', group: '鱼际', layer: 3, func: '外展拇指（掌骨），拇指对掌运动的起始动作' },
+  { id: 'supinator', names: ['left supinator'], cn: '旋后肌', group: '前臂后群', layer: 2, func: '使前臂旋后' },
+  { id: 'abductor pollicis longus', names: ['left abductor pollicis longus'], cn: '拇长展肌', group: '前臂后群', layer: 2, func: '外展拇指（止于第 1 掌骨底）' },
+  { id: 'extensor pollicis brevis', names: ['left extensor pollicis brevis'], cn: '拇短伸肌', group: '前臂后群', layer: 2, func: '伸拇指（止于拇指近节指骨底）' },
+  { id: 'extensor pollicis longus', names: ['left extensor pollicis longus'], cn: '拇长伸肌', group: '前臂后群', layer: 2, func: '伸拇指（止于拇指远节指骨底，与拇长展肌/拇短伸肌构成鼻烟壶）' },
+  { id: 'extensor indicis', names: ['left extensor indicis'], cn: '示指伸肌', group: '前臂后群', layer: 2, func: '伸示指（止于示指指背腱膜）' },
+  { id: 'abductor pollicis brevis', names: ['left abductor pollicis brevis'], cn: '拇短展肌', group: '鱼际', layer: 3, func: '外展拇指' },
   { id: 'flexor pollicis brevis', names: ['left flexor pollicis brevis', 'superficial head of left flexor pollicis brevis'], cn: '拇短屈肌', group: '鱼际', layer: 3, func: '屈拇指掌指关节' },
-  { id: 'opponens pollicis', names: ['left opponens pollicis'], cn: '拇对掌肌', group: '鱼际', layer: 3, func: '拇指对掌（使拇指尖能接触其他手指）' },
-  { id: 'adductor pollicis', names: ['oblique head of left adductor pollicis', 'transverse head of left adductor pollicis'], cn: '拇收肌', group: '鱼际', layer: 3, func: '内收拇指（对掌后夹持物体的关键肌）' },
+  { id: 'opponens pollicis', names: ['left opponens pollicis'], cn: '拇对掌肌', group: '鱼际', layer: 3, func: '使拇指对掌' },
+  { id: 'adductor pollicis', names: ['oblique head of left adductor pollicis', 'transverse head of left adductor pollicis'], cn: '拇收肌', group: '鱼际', layer: 3, func: '内收拇指；屈拇指掌指关节' },
   { id: 'abductor digiti minimi', names: ['left abductor digiti minimi'], cn: '小指展肌', group: '小鱼际', layer: 3, func: '外展小指' },
   { id: 'flexor digiti minimi brevis', names: ['left flexor digiti minimi brevis'], cn: '小指短屈肌', group: '小鱼际', layer: 3, func: '屈小指掌指关节' },
-  { id: 'opponens digiti minimi', names: ['left opponens digiti minimi'], cn: '小指对掌肌', group: '小鱼际', layer: 3, func: '小指对掌' },
-  { id: 'dorsal interossei', names: ['set of dorsal interossei of left hand'], cn: '骨间背侧肌', group: '手内在肌', layer: 3, func: '外展第 2~4 指；屈掌指关节、伸指间关节（共 4 块）' },
-  { id: 'palmar interossei', names: ['set of palmar interossei of left hand'], cn: '骨间掌侧肌', group: '手内在肌', layer: 3, func: '内收第 2、4、5 指；屈掌指关节（共 3 块）' },
-  { id: 'lumbricals', names: ['set of lumbricals of left hand'], cn: '蚓状肌', group: '手内在肌', layer: 3, func: '屈掌指关节、伸指间关节（共 4 块）' },
+  { id: 'opponens digiti minimi', names: ['left opponens digiti minimi'], cn: '小指对掌肌', group: '小鱼际', layer: 3, func: '使小指对掌' },
+  { id: 'dorsal interossei', names: ['set of dorsal interossei of left hand'], cn: '骨间背侧肌', group: '手内在肌', layer: 3, func: '固定第 3 指，外展第 2、4 指；屈掌指关节、伸指骨间关节（共 4 块）' },
+  { id: 'palmar interossei', names: ['set of palmar interossei of left hand'], cn: '骨间掌侧肌', group: '手内在肌', layer: 3, func: '内收第 2、4、5 指；屈掌指关节、伸指骨间关节（共 3 块）' },
+  { id: 'lumbricals', names: ['set of lumbricals of left hand'], cn: '蚓状肌', group: '手内在肌', layer: 3, func: '屈第 2~5 指掌指关节、伸其指骨间关节（共 4 块）' },
   { id: 'flexor retinaculum', names: ['left flexor retinaculum'], cn: '屈肌支持带', group: '腕部', layer: 3, func: '架于腕骨沟上，与腕骨沟共同构成腕管；固定屈肌腱' },
 ];
 // mesh 名 → 逻辑肌肉（用于点击识别）
@@ -482,6 +483,7 @@ function skipCalib() {
 
 function updateModelFromHand(lm) {
   if (!modelRoot) return;
+  if (state.paused) return;   // 暂停：冻结模型跟随（点击查看肌肉用）；识别/高亮不受影响
   // 屏幕归一化（0-1，已含 cover 修正 + 前置镜像）与物理空间 NDC（x 右、y 上、z 朝相机为正）
   const S = lm.map(p => screenNorm(p));
   const P = S.map(s => ({ x: s.x * 2 - 1, y: -(s.y * 2 - 1), z: 0 }));
@@ -742,6 +744,13 @@ function bindUI() {
     }
   });
   $('mi-exit').addEventListener('click', () => { setLayerMode(-1); clearMuscleInfo(); });
+  // 暂停/恢复跟随
+  $('btn-pause').addEventListener('click', () => {
+    state.paused = !state.paused;
+    $('btn-pause').textContent = state.paused ? '▶ 继续' : '⏸ 暂停';
+    $('btn-pause').classList.toggle('active', state.paused);
+    toast(state.paused ? '已暂停跟随——可点击肌肉查看' : '已恢复跟随', 1800);
+  });
   $('btn-collapse').addEventListener('click', () => {
     const body = $('dbg-body');
     const hidden = body.classList.toggle('hidden');
