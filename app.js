@@ -284,7 +284,7 @@ const REAL_ARM_LEN = 0.44;                 // 真实前臂+手全长 (m)
 const REAL_HAND_LEN = 0.19;                // 真实手长：腕→中指指尖 (m)
 const Z_GAIN = 1.5;                          // MediaPipe z 深度增益（近距时 z 易主导方向，调低）
 const FINGER_Z_W = 0.3;                       // 手指方向中 z 分量权重（弱化，防深度主导 90° 偏转）
-const SMOOTH_K = 0.45;                     // 跟随平滑系数（0-1，越大越跟手）
+const SMOOTH_K = 0.55;                     // 跟随平滑系数（0-1，越大越跟手；调高提升翻转响应）
 // 模型在 PALM_DEPTH 处时，屏幕归一化高度 1.0 对应的世界长度
 const VIS_H = 2 * PALM_DEPTH * Math.tan(THREE.MathUtils.degToRad(CAM_FOV) / 2);
 // 屏幕归一化手长 → 模型缩放系数：手长(屏幕) → 手世界长(≈手在模型深度) → 按真实比例放大到模型全长
@@ -375,8 +375,7 @@ function updateModelFromHand(lm) {
     zAxis.negate();   // 首帧：默认掌心朝镜头
   }
   state.lastPalm = zAxis.clone();
-  // 掌心强制朝镜头：法线与朝镜头方向强混合（0.6 朝镜头 + 0.4 法线倾斜），手掌翻转不跟随、不拧巴
-  zAxis.lerp(new THREE.Vector3(0, 0, 1), 0.6).normalize();
+  // 掌心跟随：去掉强混合压缩（模型基已修正，时间连续性 + 平滑已足够稳定；翻转幅度不再被压缩）
   // Gram-Schmidt 正交化：xAxis 去掉 zAxis 分量
   xAxis.addScaledVector(zAxis, -xAxis.dot(zAxis));
   if (xAxis.lengthSq() < 1e-8) xAxis.set(1, 0, 0);
