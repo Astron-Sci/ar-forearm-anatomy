@@ -419,9 +419,10 @@ function onHandResults(r) {
   }
   state.hand = r.multiHandLandmarks[0];
   state.landmarks = state.hand;
-  // 前置摄像头输入是镜像画面，MediaPipe 的 Left/Right 与实际相反 → 取反
+  // MediaPipe 假定输入为镜像图（自拍/前置），前置原始帧本身即镜像 → 直接输出真实手性，无需取反；
+  // 后置摄像头原始帧非镜像 → 需取反交换 Left/Right
   let label = r.multiHandedness && r.multiHandedness[0] ? r.multiHandedness[0].label : '?';
-  if (camFacingFront && (label === 'Left' || label === 'Right')) label = label === 'Left' ? 'Right' : 'Left';
+  if (!camFacingFront && (label === 'Left' || label === 'Right')) label = label === 'Left' ? 'Right' : 'Left';
   state.handedness = label;
   state.score = (r.multiHandedness && r.multiHandedness[0] ? r.multiHandedness[0].score : 0);
   $('dbg-score').textContent = state.score.toFixed(2);
@@ -544,6 +545,7 @@ window.__ar = {
   get musclesGroup() { return musclesGroup; },
   get state() { return state; },
   // 供 headless/调试注入假手部关键点：window.__ar.setHand(lm) 返回跟随结果
+  onHandResults(r) { onHandResults(r); },
   setHand(lm) {
     if (!modelRoot) return { error: 'model not loaded' };
     state.handedness = state.handedness || 'Left';
