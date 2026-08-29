@@ -19,6 +19,7 @@ const state = {
   actions: [],          // 识别出的动作列表
   smooth: false,        // 跟随平滑开关（首帧关闭，直接对齐）
   lastPalm: null,       // 上一帧掌面法线（时间连续性，解决叉积手性歧义）
+  calib: { phase: 'idle', start: 0, ang: 0, qAlg: null, offset: null },  // 校准：idle|waiting|done
 };
 
 // ── Three.js 场景 ──
@@ -303,6 +304,32 @@ function screenNorm(lm) {
   return { x, y };
 }
 
+// ── 模型校准（用户掌心朝镜头保持 3 秒，生成方向偏置补偿）──
+const CALIB_MS = 3000;
+function startCalib() {
+  if (!modelRoot || !state.running) return;
+  state.calib = { phase: 'waiting', start: performance.now(), ang: 0, qAlg: null, offset: null };
+  show('overlayCalib');
+  $('calibFill').style.width = '0%';
+}
+function finishCalib() {
+  const c = state.calib;
+  if (c.qAlg) {
+    // 期望姿态：绕 Z 转手指屏幕角（掌心自然朝镜头）
+    const qDesired = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), c.ang);
+    c.offset = qDesired.multiply(c.qAlg.clone().invert());   // offset = desired × alg⁻¹
+  }
+  c.phase = 'done';
+  hide('overlayCalib');
+  toast('✅ 校准完成！模型已对齐');
+}
+function skipCalib() {
+  state.calib.phase = 'done';
+  state.calib.offset = null;
+  hide('overlayCalib');
+  toast('已跳过校准');
+}
+
 function updateModelFromHand(lm) {
   if (!modelRoot) return;
   // 屏幕归一化（0-1，已含 cover 修正 + 前置镜像）与物理空间 NDC（x 右、y 上、z 朝相机为正）
@@ -329,8 +356,7 @@ function updateModelFromHand(lm) {
   let xAxis = new THREE.Vector3(fx, fy, fz);
   if (xAxis.lengthSq() > 1e-8) xAxis.normalize(); else xAxis.set(0, 1, 0);
   // Z 轴：掌面法线 = (中指MCP-腕) × (小指MCP-中指MCP)
-  // 叉积符号有手性歧义（单帧无法判断掌心/手背），用时间连续性解决：
-  // 首帧默认掌心朝镜头；后续帧与上一帧法线点积<0（突变）才翻转
+  // 叉积符号有手性歧义，用时间连续性解决（首帧默认掌心朝镜头）
   const a1x = p9.x - p0.x, a1y = p9.y - p0.y, a1z = p9.z - p0.z;
   const a2x = p17.x - p9.x, a2y = p17.y - p9.y, a2z = p17.z - p9.z;
   let zAxis = new THREE.Vector3(
@@ -346,6 +372,8 @@ function updateModelFromHand(lm) {
     zAxis.negate();   // 首帧：默认掌心朝镜头
   }
   state.lastPalm = zAxis.clone();
+  // 掌心强制朝镜头：法线与朝镜头方向强混合（0.6 朝镜头 + 0.4 法线倾斜），手掌翻转不跟随、不拧巴
+  zAxis.lerp(new THREE.Vector3(0, 0, 1), 0.6).normalize();
   // Gram-Schmidt 正交化：xAxis 去掉 zAxis 分量
   xAxis.addScaledVector(zAxis, -xAxis.dot(zAxis));
   if (xAxis.lengthSq() < 1e-8) xAxis.set(1, 0, 0);
@@ -355,6 +383,19 @@ function updateModelFromHand(lm) {
   const targetQuat = new THREE.Quaternion().setFromRotationMatrix(
     new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis)
   );
+
+  // ── 校准：等待期间采样手指方向角 + 算法四元数，3 秒后计算偏置 ──
+  if (state.calib.phase === 'waiting') {
+    state.calib.ang = Math.atan2(p9.y - p0.y, p9.x - p0.x);
+    state.calib.qAlg = targetQuat.clone();
+    const p = Math.min(1, (performance.now() - state.calib.start) / CALIB_MS);
+    $('calibFill').style.width = (p * 100) + '%';
+    if (p >= 1) finishCalib();
+  }
+  // 校准偏置补偿：final = offset × 算法旋转
+  if (state.calib.offset) {
+    targetQuat.premultiply(state.calib.offset);
+  }
 
   // ── 平滑跟随（位置/旋转/缩放）──
   if (state.smooth) {
@@ -481,6 +522,7 @@ function bindUI() {
       await loadModels();
       animate();
       state.running = true;
+      startCalib();   // 模型就绪后引导校准（掌心朝镜头 3 秒）
     } catch (e) {
       toast('启动失败: ' + e.message, 4000);
       console.error(e);
@@ -534,6 +576,8 @@ function bindUI() {
     if (handsInst) { try { handsInst.close && handsInst.close(); } catch (e) {} handsInst = null; }
     await startCamera();
   });
+  $('btn-recalib').addEventListener('click', () => { if (state.running) startCalib(); });
+  $('btn-calib-skip').addEventListener('click', skipCalib);
   $('btn-collapse').addEventListener('click', () => {
     const body = $('dbg-body');
     const hidden = body.classList.toggle('hidden');
@@ -555,6 +599,7 @@ window.__ar = {
   get scene() { return scene; },
   get camera() { return camera; },
   get renderer() { return renderer; },
+  startCalib, finishCalib, skipCalib,
   get modelRoot() { return modelRoot; },
   get bonesGroup() { return bonesGroup; },
   get musclesGroup() { return musclesGroup; },
@@ -581,3 +626,4 @@ window.__ar = {
 if (new URLSearchParams(location.search).get('demo') === '1') {
   setTimeout(() => $('btn-manual').click(), 300);
 }
+

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>前臂手部 AR 解剖 - v0.4.3</title>
+<title>前臂手部 AR 解剖 - v0.5.0</title>
 <link rel="stylesheet" href="style.css">
 <script type="importmap">
 {
@@ -42,15 +42,29 @@
     <button id="btn-highlight" class="active">✨ 联动高亮</button>
     <button id="btn-cam">🔄 摄像头</button>
     <button id="btn-manual">✋ 手动查看</button>
+    <button id="btn-recalib" title="重新校准模型方向">🎯 校准</button>
   </div>
 
   <!-- 启动覆盖 -->
   <div id="start-overlay">
     <div class="start-box">
-      <h2>🦴 前臂与手部 AR 解剖 <span class="tag">v0.4.3</span></h2>
+      <h2>🦴 前臂与手部 AR 解剖 <span class="tag">v0.5.0</span></h2>
       <p>摄像头识别你的手 → 叠加 3D 骨骼/肌肉模型<br>做动作 → 联动高亮参与运动的肌肉</p>
       <button id="btn-start">▶ 开始</button>
       <p class="tip">🖐 请伸出<b>左手</b>（当前为左手解剖模型）<br>手放镜头前 30-50cm | 可切换前后摄像头</p>
+    </div>
+  </div>
+
+  <!-- 校准层：加载后引导掌心朝镜头 3 秒 -->
+  <div class="overlay hidden" id="overlayCalib">
+    <div class="overlay-content">
+      <div class="overlay-title">🖐 模型校准</div>
+      <div class="overlay-subtitle">
+        请将<b>左手掌心朝向镜头</b><br>保持 <b>3 秒</b> 完成校准
+      </div>
+      <div class="calib-bar"><div id="calibFill"></div></div>
+      <div class="overlay-subtitle" style="font-size:11px;color:#3a4454;">校准后模型将精确贴合你的手</div>
+      <button class="btn-play" id="btn-calib-skip" style="background:#334155;">跳过校准</button>
     </div>
   </div>
 
@@ -60,6 +74,7 @@
 <script type="module" src="app.js"></script>
 </body>
 </html>
+
 
 
 
