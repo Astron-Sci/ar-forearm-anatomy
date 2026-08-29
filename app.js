@@ -246,7 +246,7 @@ function wristAngle(lm) {
 
 function analyzeActions(lm) {
   const actions = [];
-  // 四指弯曲（食中无名小）
+  // 四指弯曲（食中无名小）PIP 角
   const curls = [
     fingerCurl(lm, 5, 6, 7, 8),
     fingerCurl(lm, 9, 10, 11, 12),
@@ -254,18 +254,48 @@ function analyzeActions(lm) {
     fingerCurl(lm, 17, 18, 19, 20),
   ];
   const avgCurl = curls.reduce((a, b) => a + b, 0) / 4;
-  const tCurl = thumbCurl(lm);
-  const wAng = wristAngle(lm);
+  // 指尖到掌心（腕+中指MCP 中点）平均距离——握拳时指尖贴近掌心，辅助区分弯曲/自然手
+  const pcx = (lm[0].x + lm[9].x) / 2, pcy = (lm[0].y + lm[9].y) / 2, pcz = (lm[0].z + lm[9].z) / 2;
+  let tipDist = 0;
+  [8, 12, 16, 20].forEach(t => { tipDist += Math.hypot(lm[t].x - pcx, lm[t].y - pcy, lm[t].z - pcz); });
+  tipDist /= 4;
 
-  if (avgCurl > 100) actions.push('握拳');
-  else if (avgCurl < 40) actions.push('伸指');
-  if (tCurl > 90) actions.push('拇指屈');
-  else if (tCurl < 35) actions.push('拇指伸');
-  // 拇指对掌：拇指尖(4) 与小指尖(20) 距离近
+  // 握拳：PIP 弯曲（fingerCurl 语义：大=伸直 180°，小=弯曲 0°）；真实握拳 PIP 角约 60-100°+指尖贴掌心
+  if (avgCurl < 100 && tipDist < 0.15) actions.push('握拳');
+  // 伸指：PIP 近直（>150°）且指尖远离掌心（排除自然放松手）
+  else if (avgCurl > 150 && tipDist > 0.15) actions.push('伸指');
+
+  const tCurl = thumbCurl(lm);   // 同样语义：大=拇指伸直
+  if (tCurl < 70) actions.push('拇指屈');
+  else if (tCurl > 150) actions.push('拇指伸');
+
+  // 拇指对掌：拇指尖(4) 与小指尖(20) 距离近（手掌摊开时更易触发）
   const dThumbPinky = Math.hypot(lm[4].x - lm[20].x, lm[4].y - lm[20].y, lm[4].z - lm[20].z);
-  if (dThumbPinky < 0.12 && avgCurl > 60) actions.push('拇指对掌');
-  if (wAng < 60) actions.push('屈腕');
-  else if (wAng > 130) actions.push('伸腕');
+  if (dThumbPinky < 0.14 && avgCurl > 100) actions.push('拇指对掌');
+
+  // ── 旋前/旋后（手掌绕前臂轴翻转，掌法线前后倾）──
+  // 掌法线 = 手指方向 × 掌宽方向（3D，含深度）
+  const fx2 = lm[9].x - lm[0].x, fy2 = lm[9].y - lm[0].y, fz2 = lm[9].z - lm[0].z;
+  const wx2 = lm[17].x - lm[5].x, wy2 = lm[17].y - lm[5].y, wz2 = lm[17].z - lm[5].z;
+  const nx2 = fy2 * wz2 - fz2 * wy2, ny2 = fz2 * wx2 - fx2 * wz2, nz2 = fx2 * wy2 - fy2 * wx2;
+  // 法线水平方位角：0=掌心朝镜头；±90°=旋前/旋后（手掌绕手指轴翻转）
+  const nLen = Math.hypot(nx2, ny2, nz2);
+  let supinating = false, pronating = false;
+  if (nLen > 1e-4 && avgCurl > 100 && Math.abs(nz2) > 1e-3) {   // 手接近伸直才判（握拳时掌法线无意义）
+    const roll = Math.atan2(nx2, nz2) * 180 / Math.PI;
+    // 符号按左手：旋前掌心转向前臂尺侧（需实测确认，若反了互换）
+    if (roll > 30) { actions.push('旋前'); pronating = true; }
+    else if (roll < -30) { actions.push('旋后'); supinating = true; }
+  }
+
+  // 屈腕/伸腕：腕弯曲程度（中性≈180°）；方向用 PIP 相对 MCP 的深度
+  // （MediaPipe z 越小越近相机；掌心朝镜头时屈腕=指尖向镜头弯，zBend<0）
+  // 旋前/旋后状态下不判（避免翻转时误判）
+  const wAng = wristAngle(lm);
+  const bend = 180 - wAng;
+  if (!supinating && !pronating && bend > 35) {
+    actions.push((lm[10].z - lm[9].z) < 0 ? '屈腕' : '伸腕');
+  }
 
   // 调试显示
   $('dbg-curl').textContent = avgCurl.toFixed(0) + '°';
