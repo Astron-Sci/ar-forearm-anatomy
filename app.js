@@ -13,10 +13,11 @@ const state = {
   showMuscles: true,
   highlight: true,
   hand: null,           // 当前手部关键点
-  handedness: null,     // Left / Right
+  handedness: null,     // Left / Right（已按前置镜像取反）
   landmarks: null,      // 归一化 21 点
   score: 0,
   actions: [],          // 识别出的动作列表
+  smooth: false,        // 跟随平滑开关（首帧关闭，直接对齐）
 };
 
 // ── Three.js 场景 ──
@@ -269,12 +270,15 @@ function analyzeActions(lm) {
 }
 
 // ── 模型跟随手部 ──
+// 模型本地基：手指 +X、掌心 +Z（朝镜头）、Y = Z×X（左手解剖，拇指侧 -Y）
 // 相机在 (0,0,1.2) 朝 -Z，模型锚点（腕骨中心）对准 MediaPipe 腕点 lm[0]
 const PALM_DEPTH = 1.2;                    // 相机到模型平面的距离
 const CAM_FOV = 55;                        // 相机垂直 FOV
 const MODEL_LEN = 0.55;                    // 模型烘焙后全长（前臂+手）
 const REAL_ARM_LEN = 0.44;                 // 真实前臂+手全长 (m)
 const REAL_HAND_LEN = 0.19;                // 真实手长：腕→中指指尖 (m)
+const Z_GAIN = 3;                          // MediaPipe z 深度增益（z 尺度远小于 x/y，放大后法线/方向更稳）
+const SMOOTH_K = 0.45;                     // 跟随平滑系数（0-1，越大越跟手）
 // 模型在 PALM_DEPTH 处时，屏幕归一化高度 1.0 对应的世界长度
 const VIS_H = 2 * PALM_DEPTH * Math.tan(THREE.MathUtils.degToRad(CAM_FOV) / 2);
 // 屏幕归一化手长 → 模型缩放系数：手长(屏幕) → 手世界长(≈手在模型深度) → 按真实比例放大到模型全长
@@ -299,28 +303,56 @@ function screenNorm(lm) {
 
 function updateModelFromHand(lm) {
   if (!modelRoot) return;
-  const p0 = screenNorm(lm[0]);    // 腕
-  const p12 = screenNorm(lm[12]);  // 中指指尖
+  // 屏幕归一化（0-1，已含 cover 修正 + 前置镜像）与物理空间 NDC（x 右、y 上、z 朝相机为正）
+  const S = lm.map(p => screenNorm(p));
+  const P = S.map(s => ({ x: s.x * 2 - 1, y: -(s.y * 2 - 1), z: 0 }));
+  // z 深度（MediaPipe z 越小越近相机 → 取反+增益）
+  lm.forEach((p, i) => { P[i].z = -p.z * Z_GAIN; });
+  const p0 = P[0], p9 = P[9], p12 = P[12], p17 = P[17];
 
-  // 位置：腕点 → NDC → 射线与 z=0 模型平面求交（比固定距离更精确）
-  const ndcX = p0.x * 2 - 1;
-  const ndcY = -(p0.y * 2 - 1);
-  const v = new THREE.Vector3(ndcX, ndcY, -1).unproject(camera);
+  // ── 位置：腕点 → 射线与 z=0 模型平面求交 ──
+  const v = new THREE.Vector3(p0.x, p0.y, -1).unproject(camera);
   const dir = v.sub(camera.position).normalize();
   const t = PALM_DEPTH / Math.abs(dir.z);
-  modelRoot.position.copy(camera.position.clone().add(dir.multiplyScalar(t)));
+  const targetPos = camera.position.clone().add(dir.multiplyScalar(t));
 
-  // 缩放：手长（腕→中指指尖，屏幕归一化）→ 按真实比例映射到模型全长
-  const handLen = Math.hypot(p12.x - p0.x, p12.y - p0.y);
+  // ── 缩放：手长（腕→中指指尖，屏幕归一化空间）→ 按真实比例映射到模型全长 ──
+  const handLen = Math.hypot(S[12].x - S[0].x, S[12].y - S[0].y);
   const scale = THREE.MathUtils.clamp(handLen * SCALE_K, 0.4, 12);
+  const targetScale = new THREE.Vector3(scale, scale, scale);
 
-  // 左右手镜像：模型为左手解剖结构，识别为右手时镜像成右手外观
-  const isRight = state.handedness === 'Right';
-  modelRoot.scale.set(isRight ? -scale : scale, scale, scale);
+  // ── 3D 旋转：手指方向（X 轴）+ 掌面法线（Z 轴，掌心朝镜头为正）──
+  // X 轴：腕 → 中指指尖（更长更稳）
+  const fx = p12.x - p0.x, fy = p12.y - p0.y, fz = p12.z - p0.z;
+  const fl = Math.hypot(fx, fy, fz) || 1;
+  const xAxis = new THREE.Vector3(fx / fl, fy / fl, fz / fl);
+  // Z 轴：掌面法线 = (中指MCP-腕) × (小指MCP-中指MCP)，左手掌心朝镜头时指向 +Z
+  const a1x = p9.x - p0.x, a1y = p9.y - p0.y, a1z = p9.z - p0.z;
+  const a2x = p17.x - p9.x, a2y = p17.y - p9.y, a2z = p17.z - p9.z;
+  const zAxis = new THREE.Vector3(
+    a1y * a2z - a1z * a2y,
+    a1z * a2x - a1x * a2z,
+    a1x * a2y - a1y * a2x,
+  );
+  if (zAxis.lengthSq() > 1e-8) zAxis.normalize();
+  // Y 轴：Z × X（与模型本地基一致）
+  const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis);
+  if (yAxis.lengthSq() > 1e-8) yAxis.normalize();
+  const targetQuat = new THREE.Quaternion().setFromRotationMatrix(
+    new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis)
+  );
 
-  // 朝向：模型手指默认朝 +X（烘焙时已旋转）；屏幕角 ang → 世界角 -ang；镜像时 π-ang
-  const ang = Math.atan2(p12.y - p0.y, p12.x - p0.x);
-  modelRoot.rotation.z = isRight ? Math.PI - ang : -ang;
+  // ── 平滑跟随（位置/旋转/缩放）──
+  if (state.smooth) {
+    modelRoot.position.lerp(targetPos, SMOOTH_K);
+    modelRoot.quaternion.slerp(targetQuat, SMOOTH_K);
+    modelRoot.scale.lerp(targetScale, SMOOTH_K);
+  } else {
+    modelRoot.position.copy(targetPos);
+    modelRoot.quaternion.copy(targetQuat);
+    modelRoot.scale.copy(targetScale);
+    state.smooth = true;
+  }
 }
 
 // ── MediaPipe Hands ──
@@ -392,9 +424,16 @@ function onHandResults(r) {
   if (camFacingFront && (label === 'Left' || label === 'Right')) label = label === 'Left' ? 'Right' : 'Left';
   state.handedness = label;
   state.score = (r.multiHandedness && r.multiHandedness[0] ? r.multiHandedness[0].score : 0);
-
-  $('dbg-status').textContent = `✓ ${state.handedness}手${state.handedness === 'Right' ? '（已镜像）' : ''}`;
   $('dbg-score').textContent = state.score.toFixed(2);
+
+  // 仅支持左手（模型为左手解剖）。识别到右手：隐藏模型并提示
+  if (state.handedness === 'Right') {
+    $('dbg-status').textContent = '⚠ 请伸出左手';
+    if (modelRoot) modelRoot.visible = false;
+    return;
+  }
+  if (modelRoot) modelRoot.visible = true;
+  $('dbg-status').textContent = '✓ 左手';
 
   state.actions = analyzeActions(state.hand);
   $('dbg-action').textContent = state.actions.length ? state.actions.join('、') : '无';
@@ -449,9 +488,7 @@ function bindUI() {
         state.orbitAdded = true;
       }
       state.orbit.enabled = true;
-      modelRoot.position.set(0, 0, 0);
-      modelRoot.scale.set(1, 1, 1);
-      modelRoot.rotation.set(0, 0, 0);
+      if (modelRoot) { modelRoot.visible = true; modelRoot.position.set(0, 0, 0); modelRoot.scale.set(1, 1, 1); modelRoot.rotation.set(0, 0, 0); }
       camera.position.set(0, 0, 1.2);
       animate();
       toast('手动查看模式：拖动旋转 / 滚轮缩放');
@@ -510,11 +547,15 @@ window.__ar = {
   setHand(lm) {
     if (!modelRoot) return { error: 'model not loaded' };
     state.handedness = state.handedness || 'Left';
+    state.smooth = false;
+    if (modelRoot) modelRoot.visible = true;
     updateModelFromHand(lm);
+    state.smooth = true;
     return {
       pos: modelRoot.position.toArray(),
       scale: modelRoot.scale.toArray(),
-      rot: modelRoot.rotation.toArray(),
+      quat: modelRoot.quaternion.toArray(),
+      euler: modelRoot.rotation.toArray(),
     };
   },
 };
