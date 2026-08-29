@@ -88,9 +88,12 @@ async function loadModels() {
     o.geometry.applyMatrix4(o.matrixWorld);
     o.position.set(0, 0, 0); o.rotation.set(0, 0, 0); o.scale.set(1, 1, 1);
   });
-  // ② 原始数据手指默认朝 -Z，再绕 Y 旋转 -90° 使手指朝 +X（与 updateModelFromHand 的旋转基准一致）
+  // ② 原始数据手指默认朝 -Z，先绕 Y 旋转 -90° 使手指朝 +X（与 updateModelFromHand 的旋转基准一致）
+  // ③ 再绕 X 旋转 -90°：实测模型掌心朝 -Y（拇指+Z），转到掌心朝 +Z（朝镜头、拇指朝 +Y，与代码假设一致）
   collectBones.forEach(o => o.geometry.rotateY(-Math.PI / 2));
   collectMuscles.forEach(o => o.geometry.rotateY(-Math.PI / 2));
+  collectBones.forEach(o => o.geometry.rotateX(-Math.PI / 2));
+  collectMuscles.forEach(o => o.geometry.rotateX(-Math.PI / 2));
 
   // 先把所有 mesh 挂到一个临时组，计算整体包围盒
   const tmpAll = new THREE.Group();
@@ -519,11 +522,13 @@ function bindUI() {
     try {
       await initHands();
       await startCamera();
+      show('overlayCalib');   // 提前显示校准引导（模型加载中即可看到）
       await loadModels();
       animate();
       state.running = true;
-      startCalib();   // 模型就绪后引导校准（掌心朝镜头 3 秒）
+      startCalib();   // 模型就绪，开始 3 秒计时
     } catch (e) {
+      hide('overlayCalib');
       toast('启动失败: ' + e.message, 4000);
       console.error(e);
     }
