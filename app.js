@@ -20,6 +20,8 @@ const state = {
   smooth: false,        // 跟随平滑开关（首帧关闭，直接对齐）
   lastPalm: null,       // 上一帧掌面法线（时间连续性，解决叉积手性歧义）
   calib: { phase: 'idle', start: 0, ang: 0, qAlg: null, offset: null },  // 校准：idle|waiting|done
+  selectedMuscle: null, // 当前选中的肌肉 id（点击识别）
+  layerMode: -1,        // 分层查看：-1=完整
 };
 
 // ── Three.js 场景 ──
@@ -176,6 +178,52 @@ const HIGHLIGHT_COLOR = 0xffd54f;   // 高亮金色
 const MUSCLE_BASE = 0xcc5544;
 const HIGHLIGHT_OPACITY = 0.95;
 
+// ── 肌肉中文信息表（含层次，教学用）──
+// layer: 0=浅层 1=中层 2=深层 3=手内在/支持带；group: 肌群
+const MUSCLE_DEFS = [
+  { id: 'brachioradialis', names: ['left brachioradialis'], cn: '肱桡肌', group: '前臂前群', layer: 0, func: '屈肘关节；前臂中立位时协助旋前、旋后' },
+  { id: 'pronator teres', names: ['left pronator teres', 'humeral head of left pronator teres', 'ulnar head of left pronator teres'], cn: '旋前圆肌', group: '前臂前群', layer: 0, func: '屈肘、前臂旋前（前臂最强旋前肌之一）' },
+  { id: 'flexor carpi radialis', names: ['left flexor carpi radialis'], cn: '桡侧腕屈肌', group: '前臂前群', layer: 0, func: '屈腕、外展腕（桡偏）' },
+  { id: 'palmaris longus', names: ['left palmaris longus'], cn: '掌长肌', group: '前臂前群', layer: 0, func: '屈腕、紧张掌腱膜（约 15% 人缺如）' },
+  { id: 'flexor carpi ulnaris', names: ['left flexor carpi ulnaris', 'humeral head of left flexor carpi ulnaris', 'ulnar head of left flexor carpi ulnaris'], cn: '尺侧腕屈肌', group: '前臂前群', layer: 0, func: '屈腕、内收腕（尺偏）' },
+  { id: 'flexor digitorum superficialis', names: ['left flexor digitorum superficialis', 'left flexor digitorum superficialis (2)'], cn: '指浅屈肌', group: '前臂前群', layer: 1, func: '屈近侧指间关节和掌指关节，协助屈腕' },
+  { id: 'flexor digitorum profundus', names: ['left flexor digitorum profundus'], cn: '指深屈肌', group: '前臂前群', layer: 2, func: '屈远侧指间关节（唯一），同时屈近侧指间关节和掌指关节' },
+  { id: 'flexor pollicis longus', names: ['left flexor pollicis longus'], cn: '拇长屈肌', group: '前臂前群', layer: 2, func: '屈拇指指间关节和掌指关节' },
+  { id: 'pronator quadratus', names: ['left pronator quadratus'], cn: '旋前方肌', group: '前臂前群', layer: 2, func: '前臂旋前（前臂最深层旋前肌，维持旋前）' },
+  { id: 'extensor carpi radialis longus', names: ['left extensor carpi radialis longus'], cn: '桡侧腕长伸肌', group: '前臂后群', layer: 0, func: '伸腕、外展腕（桡偏）' },
+  { id: 'extensor carpi radialis brevis', names: ['left extensor carpi radialis brevis'], cn: '桡侧腕短伸肌', group: '前臂后群', layer: 0, func: '伸腕（桡侧）' },
+  { id: 'extensor digitorum', names: ['left extensor digitorum'], cn: '指伸肌', group: '前臂后群', layer: 0, func: '伸掌指关节，继而伸指间关节；伸腕' },
+  { id: 'extensor digiti minimi', names: ['left extensor digiti minimi'], cn: '小指伸肌', group: '前臂后群', layer: 0, func: '伸小指' },
+  { id: 'extensor carpi ulnaris', names: ['left extensor carpi ulnaris', 'left extensor carpi ulnaris (2)'], cn: '尺侧腕伸肌', group: '前臂后群', layer: 0, func: '伸腕、内收腕（尺偏）' },
+  { id: 'supinator', names: ['left supinator'], cn: '旋后肌', group: '前臂后群', layer: 2, func: '前臂旋后（深部，力量强）' },
+  { id: 'abductor pollicis longus', names: ['left abductor pollicis longus'], cn: '拇长展肌', group: '前臂后群', layer: 2, func: '外展拇指（腕掌关节）' },
+  { id: 'extensor pollicis brevis', names: ['left extensor pollicis brevis'], cn: '拇短伸肌', group: '前臂后群', layer: 2, func: '伸拇指掌指关节' },
+  { id: 'extensor pollicis longus', names: ['left extensor pollicis longus'], cn: '拇长伸肌', group: '前臂后群', layer: 2, func: '伸拇指指间关节（与拇长展肌/拇短伸肌构成鼻烟壶）' },
+  { id: 'extensor indicis', names: ['left extensor indicis'], cn: '示指伸肌', group: '前臂后群', layer: 2, func: '伸示指' },
+  { id: 'abductor pollicis brevis', names: ['left abductor pollicis brevis'], cn: '拇短展肌', group: '鱼际', layer: 3, func: '外展拇指（掌骨），拇指对掌运动的起始动作' },
+  { id: 'flexor pollicis brevis', names: ['left flexor pollicis brevis', 'superficial head of left flexor pollicis brevis'], cn: '拇短屈肌', group: '鱼际', layer: 3, func: '屈拇指掌指关节' },
+  { id: 'opponens pollicis', names: ['left opponens pollicis'], cn: '拇对掌肌', group: '鱼际', layer: 3, func: '拇指对掌（使拇指尖能接触其他手指）' },
+  { id: 'adductor pollicis', names: ['oblique head of left adductor pollicis', 'transverse head of left adductor pollicis'], cn: '拇收肌', group: '鱼际', layer: 3, func: '内收拇指（对掌后夹持物体的关键肌）' },
+  { id: 'abductor digiti minimi', names: ['left abductor digiti minimi'], cn: '小指展肌', group: '小鱼际', layer: 3, func: '外展小指' },
+  { id: 'flexor digiti minimi brevis', names: ['left flexor digiti minimi brevis'], cn: '小指短屈肌', group: '小鱼际', layer: 3, func: '屈小指掌指关节' },
+  { id: 'opponens digiti minimi', names: ['left opponens digiti minimi'], cn: '小指对掌肌', group: '小鱼际', layer: 3, func: '小指对掌' },
+  { id: 'dorsal interossei', names: ['set of dorsal interossei of left hand'], cn: '骨间背侧肌', group: '手内在肌', layer: 3, func: '外展第 2~4 指；屈掌指关节、伸指间关节（共 4 块）' },
+  { id: 'palmar interossei', names: ['set of palmar interossei of left hand'], cn: '骨间掌侧肌', group: '手内在肌', layer: 3, func: '内收第 2、4、5 指；屈掌指关节（共 3 块）' },
+  { id: 'lumbricals', names: ['set of lumbricals of left hand'], cn: '蚓状肌', group: '手内在肌', layer: 3, func: '屈掌指关节、伸指间关节（共 4 块）' },
+  { id: 'flexor retinaculum', names: ['left flexor retinaculum'], cn: '屈肌支持带', group: '腕部', layer: 3, func: '架于腕骨沟上，与腕骨沟共同构成腕管；固定屈肌腱' },
+];
+// mesh 名 → 逻辑肌肉（用于点击识别）
+const MUSCLE_BY_MESH = {};
+MUSCLE_DEFS.forEach(d => d.names.forEach(n => { MUSCLE_BY_MESH[n] = d; }));
+// 层次说明
+const LAYER_NAMES = { 0: '浅层', 1: '中层', 2: '深层', 3: '手内层' };
+const LAYER_DESC = {
+  0: '前臂浅层肌，皮下即可触及',
+  1: '指浅屈肌——前臂中层（被浅层覆盖）',
+  2: '前臂深层肌，紧贴骨面',
+  3: '手部肌肉与支持带（在手内/腕部）',
+};
+
 // ── 腕骨锚点 ──
 const CARPAL_NAMES = ['left scaphoid', 'left lunate', 'left triquetral', 'left pisiform', 'left trapezium', 'left trapezoid', 'left capitate', 'left hamate'];
 // 返回 8 块腕骨几何中心的平均（世界坐标，需在烘焙后调用）
@@ -194,6 +242,7 @@ function computeCarpalAnchor() {
 
 function applyHighlight() {
   if (!musclesGroup) return;
+  if (state.selectedMuscle) return;   // 点击选中肌肉时暂停动作高亮（由 selectMuscle 控制）
   const active = new Set();
   state.actions.forEach(a => {
     (ACTION_MUSCLES[a] || []).forEach(n => active.add(n));
@@ -210,6 +259,74 @@ function applyHighlight() {
     mesh.material.opacity = on ? HIGHLIGHT_OPACITY : 0.55;
     mesh.material.emissive.setHex(on ? 0x664400 : 0x552222);
   });
+}
+
+// ── 肌肉点击识别 + 信息卡 + 分层查看 ──
+const raycaster = new THREE.Raycaster();
+const pointerNDC = new THREE.Vector2();
+let pointerDownXY = null;
+
+function onPointerDown(e) { pointerDownXY = { x: e.clientX, y: e.clientY }; }
+function onPointerUp(e) {
+  if (!pointerDownXY) return;
+  const dist = Math.hypot(e.clientX - pointerDownXY.x, e.clientY - pointerDownXY.y);
+  pointerDownXY = null;
+  if (dist > 6) return;   // 拖拽（OrbitControls 旋转）不触发点击
+  const rect = renderer.domElement.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  pointerNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  pointerNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointerNDC, camera);
+  const meshes = Array.from(muscleMeshes.values()).filter(m => m.visible);
+  const hits = raycaster.intersectObjects(meshes, false);
+  if (hits.length) {
+    const def = MUSCLE_BY_MESH[hits[0].object.name];
+    if (def) selectMuscle(def);
+  } else {
+    clearMuscleInfo();
+  }
+}
+document.addEventListener('pointerdown', onPointerDown);
+document.addEventListener('pointerup', onPointerUp);
+
+function selectMuscle(def) {
+  state.selectedMuscle = def.id;
+  // 高亮选中肌肉（金色），其余变淡
+  muscleMeshes.forEach((mesh, name) => {
+    const d = MUSCLE_BY_MESH[name];
+    const on = d && d.id === def.id;
+    mesh.material.color.setHex(on ? HIGHLIGHT_COLOR : MUSCLE_BASE);
+    mesh.material.opacity = on ? HIGHLIGHT_OPACITY : 0.22;
+    mesh.material.emissive.setHex(on ? 0x664400 : 0x552222);
+  });
+  // 信息卡
+  $('mi-cn').textContent = def.cn;
+  $('mi-meta').textContent = def.group + ' · ' + LAYER_NAMES[def.layer];
+  $('mi-layer-desc').textContent = '层次：' + LAYER_DESC[def.layer];
+  $('mi-func').textContent = def.func;
+  show('muscle-info');
+}
+function clearMuscleInfo() {
+  state.selectedMuscle = null;
+  hide('muscle-info');
+  applyHighlight();   // 恢复动作高亮
+}
+
+// 分层查看：-1=完整，0=浅层，1=浅+中，2=浅+中+深，3=全部（含手内）
+const LAYER_CYCLE = [-1, 0, 1, 2, 3];
+const LAYER_BTN = ['🧅 分层', '🧅 浅层', '🧅 中层', '🧅 深层', '🧅 手内'];
+function setLayerMode(m) {
+  state.layerMode = m;
+  muscleMeshes.forEach((mesh, name) => {
+    const def = MUSCLE_BY_MESH[name];
+    if (!def) return;
+    mesh.visible = (m < 0) ? state.showMuscles : (def.layer <= m);
+  });
+  $('btn-layer').textContent = LAYER_BTN[LAYER_CYCLE.indexOf(m)];
+  if (m >= 0) {
+    const nm = LAYER_NAMES[m];
+    toast('分层查看：' + nm + '肌（含更浅层）', 2000);
+  }
 }
 
 // ── 动作识别 ──
@@ -612,6 +729,19 @@ function bindUI() {
   });
   $('btn-recalib').addEventListener('click', () => { if (state.running) startCalib(); });
   $('btn-calib-skip').addEventListener('click', skipCalib);
+  // 分层查看 + 信息卡
+  $('btn-layer').addEventListener('click', () => {
+    const idx = LAYER_CYCLE.indexOf(state.layerMode);
+    setLayerMode(LAYER_CYCLE[(idx + 1) % LAYER_CYCLE.length]);
+  });
+  $('mi-close').addEventListener('click', clearMuscleInfo);
+  $('mi-layer').addEventListener('click', () => {
+    if (state.selectedMuscle) {
+      const def = MUSCLE_DEFS.find(d => d.id === state.selectedMuscle);
+      if (def) setLayerMode(def.layer);
+    }
+  });
+  $('mi-exit').addEventListener('click', () => { setLayerMode(-1); clearMuscleInfo(); });
   $('btn-collapse').addEventListener('click', () => {
     const body = $('dbg-body');
     const hidden = body.classList.toggle('hidden');
@@ -639,6 +769,13 @@ window.__ar = {
   get musclesGroup() { return musclesGroup; },
   get state() { return state; },
   // 供 headless/调试注入假手部关键点：window.__ar.setHand(lm) 返回跟随结果
+  // 供 headless/调试：注入假手部关键点：window.__ar.setHand(lm) 返回跟随结果
+  raycastAt(ndcX, ndcY) {
+    raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+    const meshes = Array.from(muscleMeshes.values()).filter(m => m.visible);
+    const hits = raycaster.intersectObjects(meshes, false);
+    return hits.length ? { name: hits[0].object.name, defId: MUSCLE_BY_MESH[hits[0].object.name] ? MUSCLE_BY_MESH[hits[0].object.name].id : null, dist: hits[0].distance } : null;
+  },
   onHandResults(r) { onHandResults(r); },
   setHand(lm) {
     if (!modelRoot) return { error: 'model not loaded' };
