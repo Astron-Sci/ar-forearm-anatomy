@@ -18,6 +18,7 @@ const state = {
   score: 0,
   actions: [],          // 识别出的动作列表
   smooth: false,        // 跟随平滑开关（首帧关闭，直接对齐）
+  lastPalm: null,       // 上一帧掌面法线（时间连续性，解决叉积手性歧义）
 };
 
 // ── Three.js 场景 ──
@@ -327,8 +328,9 @@ function updateModelFromHand(lm) {
   const fx = (p9.x - p0.x), fy = (p9.y - p0.y), fz = (p9.z - p0.z) * FINGER_Z_W;
   let xAxis = new THREE.Vector3(fx, fy, fz);
   if (xAxis.lengthSq() > 1e-8) xAxis.normalize(); else xAxis.set(0, 1, 0);
-  // Z 轴：掌面法线 = (中指MCP-腕) × (小指MCP-中指MCP)；
-  // 强制 z≥0（掌心朝镜头）——牺牲手背翻转跟随，换稳定性（避免叉积符号抖动造成 90°/180° 乱转）
+  // Z 轴：掌面法线 = (中指MCP-腕) × (小指MCP-中指MCP)
+  // 叉积符号有手性歧义（单帧无法判断掌心/手背），用时间连续性解决：
+  // 首帧默认掌心朝镜头；后续帧与上一帧法线点积<0（突变）才翻转
   const a1x = p9.x - p0.x, a1y = p9.y - p0.y, a1z = p9.z - p0.z;
   const a2x = p17.x - p9.x, a2y = p17.y - p9.y, a2z = p17.z - p9.z;
   let zAxis = new THREE.Vector3(
@@ -337,10 +339,13 @@ function updateModelFromHand(lm) {
     a1x * a2y - a1y * a2x,
   );
   if (zAxis.lengthSq() < 1e-8) zAxis.set(0, 0, 1);
-  if (zAxis.z < 0) zAxis.negate();   // 掌心强制朝镜头
   zAxis.normalize();
-  // 与「朝镜头」先验混合：限制法线倾斜幅度（法线过于敏感时仍保持大体朝镜头，避免乱转）
-  zAxis.lerp(new THREE.Vector3(0, 0, 1), 0.55).normalize();
+  if (state.lastPalm) {
+    if (zAxis.dot(state.lastPalm) < 0) zAxis.negate();
+  } else if (zAxis.z < 0) {
+    zAxis.negate();   // 首帧：默认掌心朝镜头
+  }
+  state.lastPalm = zAxis.clone();
   // Gram-Schmidt 正交化：xAxis 去掉 zAxis 分量
   xAxis.addScaledVector(zAxis, -xAxis.dot(zAxis));
   if (xAxis.lengthSq() < 1e-8) xAxis.set(1, 0, 0);
@@ -420,6 +425,7 @@ async function startCamera() {
 function onHandResults(r) {
   if (!r || !r.multiHandLandmarks || r.multiHandLandmarks.length === 0) {
     state.hand = null;
+    state.lastPalm = null;   // 手丢失后重置法线连续性（下次检测重新初始化）
     $('dbg-status').textContent = '未检测到手';
     $('dbg-score').textContent = '-';
     state.actions = [];
