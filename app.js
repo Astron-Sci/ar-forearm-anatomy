@@ -72,6 +72,23 @@ async function loadModels() {
   m.scene.traverse(o => { if (o.isMesh) collectMuscles.push(o); });
   console.log('[load] bones meshes:', collectBones.length, '| muscles meshes:', collectMuscles.length);
 
+  // 烘焙步骤：
+  // ① 先把 GLTF 节点树自身的变换合并进几何（GLB 内 mesh 节点可能带 position/rotation），
+  //    并重置节点为单位变换 —— 否则包围盒/锚点全部算偏
+  collectBones.forEach(o => {
+    o.updateMatrixWorld(true);
+    o.geometry.applyMatrix4(o.matrixWorld);
+    o.position.set(0, 0, 0); o.rotation.set(0, 0, 0); o.scale.set(1, 1, 1);
+  });
+  collectMuscles.forEach(o => {
+    o.updateMatrixWorld(true);
+    o.geometry.applyMatrix4(o.matrixWorld);
+    o.position.set(0, 0, 0); o.rotation.set(0, 0, 0); o.scale.set(1, 1, 1);
+  });
+  // ② 原始数据手指默认朝 -Z，再绕 Y 旋转 -90° 使手指朝 +X（与 updateModelFromHand 的旋转基准一致）
+  collectBones.forEach(o => o.geometry.rotateY(-Math.PI / 2));
+  collectMuscles.forEach(o => o.geometry.rotateY(-Math.PI / 2));
+
   // 先把所有 mesh 挂到一个临时组，计算整体包围盒
   const tmpAll = new THREE.Group();
   collectBones.forEach(o => tmpAll.add(o));
@@ -106,6 +123,16 @@ async function loadModels() {
     musclesGroup.add(o);
     muscleMeshes.set(o.name, o);
   });
+
+  // ③ 腕骨锚点：8 块腕骨几何中心平均 → 整体平移到原点（手腕即锚点）
+  const carp = computeCarpalAnchor();
+  if (carp) {
+    collectBones.forEach(o => o.geometry.translate(-carp.x, -carp.y, -carp.z));
+    collectMuscles.forEach(o => o.geometry.translate(-carp.x, -carp.y, -carp.z));
+    console.log('[load] carpal anchor:', carp.toArray().map(n => n.toFixed(3)).join(','));
+  } else {
+    console.warn('[load] 未找到腕骨，锚点保持包围盒中心');
+  }
 
   modelRoot = new THREE.Group();
   modelRoot.add(bonesGroup);
@@ -142,6 +169,22 @@ const ACTION_MUSCLES = {
 const HIGHLIGHT_COLOR = 0xffd54f;   // 高亮金色
 const MUSCLE_BASE = 0xcc5544;
 const HIGHLIGHT_OPACITY = 0.95;
+
+// ── 腕骨锚点 ──
+const CARPAL_NAMES = ['left scaphoid', 'left lunate', 'left triquetral', 'left pisiform', 'left trapezium', 'left trapezoid', 'left capitate', 'left hamate'];
+// 返回 8 块腕骨几何中心的平均（世界坐标，需在烘焙后调用）
+function computeCarpalAnchor() {
+  const acc = new THREE.Vector3();
+  let n = 0;
+  boneMeshes.forEach((m, name) => {
+    if (CARPAL_NAMES.includes(name)) {
+      m.geometry.computeBoundingBox();
+      acc.add(m.geometry.boundingBox.getCenter(new THREE.Vector3()));
+      n++;
+    }
+  });
+  return n ? acc.divideScalar(n) : null;
+}
 
 function applyHighlight() {
   if (!musclesGroup) return;
@@ -226,33 +269,58 @@ function analyzeActions(lm) {
 }
 
 // ── 模型跟随手部 ──
+// 相机在 (0,0,1.2) 朝 -Z，模型锚点（腕骨中心）对准 MediaPipe 腕点 lm[0]
+const PALM_DEPTH = 1.2;                    // 相机到模型平面的距离
+const CAM_FOV = 55;                        // 相机垂直 FOV
+const MODEL_LEN = 0.55;                    // 模型烘焙后全长（前臂+手）
+const REAL_ARM_LEN = 0.44;                 // 真实前臂+手全长 (m)
+const REAL_HAND_LEN = 0.19;                // 真实手长：腕→中指指尖 (m)
+// 模型在 PALM_DEPTH 处时，屏幕归一化高度 1.0 对应的世界长度
+const VIS_H = 2 * PALM_DEPTH * Math.tan(THREE.MathUtils.degToRad(CAM_FOV) / 2);
+// 屏幕归一化手长 → 模型缩放系数：手长(屏幕) → 手世界长(≈手在模型深度) → 按真实比例放大到模型全长
+const SCALE_K = (VIS_H / MODEL_LEN) * (REAL_ARM_LEN / REAL_HAND_LEN);
+
+// 把 MediaPipe 归一化坐标（相对视频帧，未镜像）转为屏幕归一化坐标（0-1，y 向下，含 cover 裁剪修正 + 前置镜像）
+function screenNorm(lm) {
+  const v = $('video');
+  const vw = v.videoWidth, vh = v.videoHeight;
+  const sw = window.innerWidth, sh = window.innerHeight;
+  let x = lm.x, y = lm.y;
+  if (vw && vh) {
+    // object-fit: cover：视频等比放大铺满屏幕，超出部分裁剪 → 修正偏移
+    const s = Math.max(sw / vw, sh / vh);
+    const dw = vw * s, dh = vh * s;
+    x = (x * dw - (dw - sw) / 2) / sw;
+    y = (y * dh - (dh - sh) / 2) / sh;
+  }
+  if (camFacingFront) x = 1 - x;   // 前置摄像头画面为镜像
+  return { x, y };
+}
+
 function updateModelFromHand(lm) {
   if (!modelRoot) return;
-  // 以手掌中心(腕0 + 中指MCP 9)为锚点，映射到屏幕坐标（视频为上下翻转的前置镜像）
-  const wx = (lm[0].x + lm[9].x) / 2;
-  const wy = (lm[0].y + lm[9].y) / 2;
-  // 前置摄像头画面是镜像的：x 取反
-  let nx = camFacingFront ? (1 - wx) : wx;
-  let ny = wy;
-  // 屏幕坐标 → NDC
-  const ndcX = nx * 2 - 1;
-  const ndcY = -(ny * 2 - 1);
+  const p0 = screenNorm(lm[0]);    // 腕
+  const p12 = screenNorm(lm[12]);  // 中指指尖
+
+  // 位置：腕点 → NDC → 射线与 z=0 模型平面求交（比固定距离更精确）
+  const ndcX = p0.x * 2 - 1;
+  const ndcY = -(p0.y * 2 - 1);
   const v = new THREE.Vector3(ndcX, ndcY, -1).unproject(camera);
   const dir = v.sub(camera.position).normalize();
-  const dist = 1.2;
-  const pos = camera.position.clone().add(dir.multiplyScalar(dist));
-  modelRoot.position.set(pos.x, pos.y, pos.z);
+  const t = PALM_DEPTH / Math.abs(dir.z);
+  modelRoot.position.copy(camera.position.clone().add(dir.multiplyScalar(t)));
 
-  // 手部大小 → 模型缩放（模型已烘焙到宽约 0.55 世界单位）
-  // handW 是手在画面中的归一化宽度(0-1)，映射为模型比例
-  const handW = Math.hypot(lm[0].x - lm[9].x, lm[0].y - lm[9].y) * 2;
-  // 当手占画面约 30% 宽时，模型约等于手的大小；线性映射并限制范围
-  const targetScale = Math.max(0.5, Math.min(4.0, handW * 2.6));
-  modelRoot.scale.setScalar(targetScale);
+  // 缩放：手长（腕→中指指尖，屏幕归一化）→ 按真实比例映射到模型全长
+  const handLen = Math.hypot(p12.x - p0.x, p12.y - p0.y);
+  const scale = THREE.MathUtils.clamp(handLen * SCALE_K, 0.4, 12);
 
-  // 朝向：根据掌面法线粗略旋转（绕Z轴跟随手掌方向）
-  const ang = Math.atan2(lm[9].y - lm[0].y, lm[9].x - lm[0].x);
-  modelRoot.rotation.z = camFacingFront ? -ang : ang;
+  // 左右手镜像：模型为左手解剖结构，识别为右手时镜像成右手外观
+  const isRight = state.handedness === 'Right';
+  modelRoot.scale.set(isRight ? -scale : scale, scale, scale);
+
+  // 朝向：模型手指默认朝 +X（烘焙时已旋转）；屏幕角 ang → 世界角 -ang；镜像时 π-ang
+  const ang = Math.atan2(p12.y - p0.y, p12.x - p0.x);
+  modelRoot.rotation.z = isRight ? Math.PI - ang : -ang;
 }
 
 // ── MediaPipe Hands ──
@@ -319,10 +387,13 @@ function onHandResults(r) {
   }
   state.hand = r.multiHandLandmarks[0];
   state.landmarks = state.hand;
-  state.handedness = r.multiHandedness && r.multiHandedness[0] ? r.multiHandedness[0].label : '?';
+  // 前置摄像头输入是镜像画面，MediaPipe 的 Left/Right 与实际相反 → 取反
+  let label = r.multiHandedness && r.multiHandedness[0] ? r.multiHandedness[0].label : '?';
+  if (camFacingFront && (label === 'Left' || label === 'Right')) label = label === 'Left' ? 'Right' : 'Left';
+  state.handedness = label;
   state.score = (r.multiHandedness && r.multiHandedness[0] ? r.multiHandedness[0].score : 0);
 
-  $('dbg-status').textContent = `✓ ${state.handedness}手`;
+  $('dbg-status').textContent = `✓ ${state.handedness}手${state.handedness === 'Right' ? '（已镜像）' : ''}`;
   $('dbg-score').textContent = state.score.toFixed(2);
 
   state.actions = analyzeActions(state.hand);
@@ -427,21 +498,28 @@ initThree();
 animate();  // 渲染循环立即启动
 bindUI();
 // 暴露给调试工具
-window.__ar = { get scene() { return scene; }, get modelRoot() { return modelRoot; }, get bonesGroup() { return bonesGroup; }, get musclesGroup() { return musclesGroup; }, get state() { return state; } };
+window.__ar = {
+  get scene() { return scene; },
+  get camera() { return camera; },
+  get renderer() { return renderer; },
+  get modelRoot() { return modelRoot; },
+  get bonesGroup() { return bonesGroup; },
+  get musclesGroup() { return musclesGroup; },
+  get state() { return state; },
+  // 供 headless/调试注入假手部关键点：window.__ar.setHand(lm) 返回跟随结果
+  setHand(lm) {
+    if (!modelRoot) return { error: 'model not loaded' };
+    state.handedness = state.handedness || 'Left';
+    updateModelFromHand(lm);
+    return {
+      pos: modelRoot.position.toArray(),
+      scale: modelRoot.scale.toArray(),
+      rot: modelRoot.rotation.toArray(),
+    };
+  },
+};
 
 // 演示模式：?demo=1 自动进入手动查看（无需摄像头，供测试/预览）
 if (new URLSearchParams(location.search).get('demo') === '1') {
   setTimeout(() => $('btn-manual').click(), 300);
 }
-
-// 自检：把渲染统计写到 DOM（供 headless 验证）
-setInterval(() => {
-  const el = document.getElementById('dbg-status');
-  if (el && window.__ar) {
-    const ar = window.__ar;
-    const r = renderer && renderer.info ? renderer.info.render : null;
-    const cam = camera ? 'cam:' + camera.position.toArray().map(n=>n.toFixed(2)).join(',') : '';
-    const root = modelRoot ? 'root:' + modelRoot.position.toArray().map(n=>n.toFixed(2)).join(',') + ' s:' + (modelRoot.scale ? modelRoot.scale.x.toFixed(3) : '?') : 'noroot';
-    el.textContent = '模型:' + (r ? r.triangles + 'tri ' + r.calls + 'calls' : '?') + ' | ' + cam + ' | ' + root;
-  }
-}, 1000);
