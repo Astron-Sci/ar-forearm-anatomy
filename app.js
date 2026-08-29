@@ -88,8 +88,8 @@ async function loadModels() {
     o.geometry.translate(-centerAll.x, -centerAll.y, -centerAll.z);
     o.geometry.scale(scaleAll, scaleAll, scaleAll);
     o.material = new THREE.MeshPhongMaterial({
-      color: 0xf0ead6, emissive: 0x888866, emissiveIntensity: 0.12,
-      transparent: true, opacity: 0.95, shininess: 40, side: THREE.DoubleSide,
+      color: 0xf0ead6, emissive: 0x888866, emissiveIntensity: 0.08,
+      transparent: true, opacity: 0.99, shininess: 30, side: THREE.DoubleSide,
     });
     o.castShadow = false;
     bonesGroup.add(o);
@@ -100,8 +100,8 @@ async function loadModels() {
     o.geometry.translate(-centerAll.x, -centerAll.y, -centerAll.z);
     o.geometry.scale(scaleAll, scaleAll, scaleAll);
     o.material = new THREE.MeshPhongMaterial({
-      color: 0xcc5544, emissive: 0x552222, emissiveIntensity: 0.15,
-      transparent: true, opacity: 0.65, shininess: 20, side: THREE.DoubleSide,
+      color: 0xcc5544, emissive: 0x552222, emissiveIntensity: 0.08,
+      transparent: true, opacity: 0.85, shininess: 20, side: THREE.DoubleSide,
     });
     musclesGroup.add(o);
     muscleMeshes.set(o.name, o);
@@ -158,7 +158,7 @@ function applyHighlight() {
     }
     const on = active.has(name);
     mesh.material.color.setHex(on ? HIGHLIGHT_COLOR : MUSCLE_BASE);
-    mesh.material.opacity = on ? HIGHLIGHT_OPACITY : 0.4;
+    mesh.material.opacity = on ? HIGHLIGHT_OPACITY : 0.55;
     mesh.material.emissive.setHex(on ? 0x664400 : 0x552222);
   });
 }
